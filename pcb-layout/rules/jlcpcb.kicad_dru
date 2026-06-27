@@ -1,0 +1,29 @@
+(version 1)
+
+# JLCPCB — 2-layer standard process capabilities (the DEFAULT ruleset).
+# Load via KiCad: Board Setup ▸ Custom Rules ▸ paste.
+#
+# IMPORTANT: KiCad custom rules can only make DRC STRICTER than the built-in
+# minimums — they cannot LOOSEN KiCad's defaults. So to actually check against
+# the fab spec you ALSO set these as the minimums in
+#   Board Setup ▸ Design Rules ▸ Constraints  (and the Default net class).
+# This file documents the spec and adds the rules where the fab is stricter
+# than KiCad's defaults (edge clearance, hole-to-hole). See rules/README.md.
+#
+# Board Setup ▸ Constraints values to type in:
+#   min track width 0.127mm | min clearance 0.127mm | min annular 0.13mm
+#   min via 0.45mm / hole 0.3mm | min through-hole 0.3mm | min hole-to-hole 0.5mm
+#   copper-to-edge 0.3mm | solder-mask min web 0.4mm
+# Default net class: track 0.2mm, clearance 0.15mm, via 0.6mm / 0.3mm.
+
+(rule "JLCPCB edge clearance"
+  (constraint edge_clearance (min 0.3mm)))
+
+(rule "JLCPCB hole to hole"
+  (constraint hole_to_hole (min 0.5mm)))
+
+(rule "JLCPCB min annular ring"
+  (constraint annular_width (min 0.13mm)))
+
+(rule "JLCPCB silkscreen over pad"
+  (constraint silk_clearance (min 0.15mm)))

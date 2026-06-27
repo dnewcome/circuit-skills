@@ -1,0 +1,19 @@
+(version 1)
+
+# PCBWay — 2-layer standard process. Very close to JLCPCB.
+# Load via Board Setup ▸ Custom Rules; set the mins in Board Setup ▸ Constraints
+# (custom rules only tighten, never loosen). See rules/README.md.
+#
+# Board Setup ▸ Constraints:
+#   min track 0.127mm | clearance 0.127mm | annular 0.13mm
+#   via 0.45mm / hole 0.3mm | through-hole 0.3mm | hole-to-hole 0.5mm
+#   copper-to-edge 0.3mm | solder-mask min web 0.4mm
+
+(rule "PCBWay edge clearance"
+  (constraint edge_clearance (min 0.3mm)))
+
+(rule "PCBWay hole to hole"
+  (constraint hole_to_hole (min 0.5mm)))
+
+(rule "PCBWay min annular ring"
+  (constraint annular_width (min 0.13mm)))

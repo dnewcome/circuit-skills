@@ -1,0 +1,19 @@
+(version 1)
+
+# OSH Park — 2-layer "6 mil" service (USA, ENIG, purple). Looser than JLC.
+# Load via Board Setup ▸ Custom Rules; set the mins in Board Setup ▸ Constraints
+# (custom rules only tighten, never loosen). See rules/README.md.
+#
+# Board Setup ▸ Constraints:
+#   min track 0.1524mm (6mil) | clearance 0.1524mm (6mil) | annular 0.1524mm
+#   via 0.7mm / hole 0.33mm (13mil) | through-hole 0.33mm | hole-to-hole 0.5mm
+#   copper-to-edge 0.381mm (15mil)
+
+(rule "OSHPark edge clearance"
+  (constraint edge_clearance (min 0.381mm)))
+
+(rule "OSHPark min annular ring"
+  (constraint annular_width (min 0.1524mm)))
+
+(rule "OSHPark min hole"
+  (constraint hole_size (min 0.33mm)))
