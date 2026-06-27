@@ -22,10 +22,19 @@ SRC=index.circuit.tsx
 DISPLAY=${DISPLAY:-:0}
 mkdir -p build
 
-echo "[1/7] export placement -> $BOARD"
+echo "[1/8] export placement -> $BOARD"
 $TSCI export -f kicad_pcb "$SRC" -o "$BOARD" 2>&1 | grep -iE 'exported|error:' || true
 
-echo "[2/7] reconcile fragmented cross-subcircuit nets (modular flow)"
+echo "[2/8] PLACEMENT GATE — parts must be INSIDE the outline (notch/cutouts) before routing"
+# tscircuit has NO keep-in: pcbX/pcbY is manual, so a part can sit in a notch / on a hole.
+# This is a PLACEMENT bug (not a router/keepout issue). Fix it before wasting a route.
+if ! node scripts/outline-check.mjs "$SRC"; then
+  echo "  ^^ parts outside the outline / in a hole — FIX placement, then re-run. Routing a bad"
+  echo "     floorplan just hides the problem. (Also eyeball courtyard overlaps via drc_check.)"
+  [ "${FORCE:-}" = "1" ] || exit 1
+fi
+
+echo "[3/8] reconcile fragmented cross-subcircuit nets (modular flow)"
 python3 scripts/merge_nets.py "$BOARD" --write
 
 echo "[3/7] export DSN + keepout the interior board holes (window/reels/screws)"

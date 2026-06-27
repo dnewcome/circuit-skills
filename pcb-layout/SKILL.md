@@ -144,6 +144,20 @@ This is where the time goes and where tools are worst (parts dumped at origin, d
   bank), the bus has to detour around it and unrouted spikes. Put talkers adjacent; keep cutouts/holes
   out of the bus channels (on flexisette, mcu-left ↔ audio-right across a hole-filled centre was the
   whole routing problem — a floorplan fix, not a router fix).
+- **On a cutout-heavy outline, MAP THE CLEAR REGIONS FIRST.** Before placing, subtract the holes + the
+  notch from the board and note what's left — usually a few bands/ends/strips (flexisette: a top band,
+  two narrow end columns beside the reels, a thin strip below the holes/above the notch). Then fit each
+  block to a region it actually *fits*. This is the difference between converging and thrashing.
+- **Narrow a too-wide block to fit a narrow region** — don't fight a 33mm block into a 24mm column.
+  Stack a chip's support parts *above/below* it instead of *beside* it (mcu went 33→21mm wide by moving
+  the reset/boot passives above the WROOM), and reposition a long breakout header off the obstacle.
+- **Drop redundant parts that hog edge real-estate.** On a tight board, question every connector/button:
+  modular **breakout headers** are pointless once buses route chip-to-chip via reconciled named nets;
+  **reset/boot buttons** are pointless with native-USB (esptool resets over USB-CDC). Removing
+  `J_IO/J_I2S/J_PWR` + `SW_RST/SW_BOOT` freed ~40mm and took flexisette from 14 courtyard overlaps to 0.
+- **Gate on the COURTYARD, not the eyeballed body size.** Module/IC keepouts are bigger than the part
+  (the ESP32-S3-WROOM-1 antenna keepout extends well past the metal), so two parts that "look" clear
+  still collide. `drc_check.py` courtyard is the truth; chase it, not your mental bbox.
 - **The board-outline rule — `scripts/outline-check.mjs` (run it after every floorplan move).** tscircuit
   has **no keep-in constraint**: `pcbX/pcbY` is manual, so a block can land in a concave **notch**, off
   the edge, or inside a **`<cutout>`** and you won't see it — tscircuit emits `pcb_component_outside_
@@ -173,9 +187,36 @@ PLACEMENT*, not one long route:
   **ROUTING** (real shorts between distinct nets, crossings, unconnected), **FALSE shorts** (unreconciled
   net fragments → run `merge_nets.py`), and **RULE/FAB/COSMETIC** (global via/clearance, silk). A clean
   placement = 0 courtyard overlaps; a routable placement = low unrouted on a FAST pass.
+- **Placement has THREE gates — all separate from routing, all must pass:** (1) **`outline-check.mjs`**
+  — every part INSIDE the outline (not in a notch, cutout, reel, or screw hole; tscircuit has no keep-in,
+  so `pcbX/pcbY` can drop a part into a hole and only this catches it); (2) **`drc_check.py` courtyard**
+  — no part-part overlaps; (3) **low unrouted** on a fast pass. Drive ALL THREE — optimising routability
+  alone will happily shove a block into the head notch (it did, on flexisette).
+- **⚠ Routing keepouts ≠ placement keep-in.** A DSN keepout (`add_cutout_keepouts.py`) stops *traces*
+  crossing a hole — the router's job. It does NOTHING to stop a *part* being placed in the hole/notch.
+  A part in a cutout is a PLACEMENT bug (`outline-check` flags it), **never** a Freerouting failure —
+  the router only routes, it never moves parts.
 - **Round-trip:** placement lives in code (`pcbX/pcbY`), so the loop is *edit code → `route.sh` → read
   DRC*. You can also nudge in KiCad; `route.sh` re-exports from code each run, so persist a KiCad nudge
   back into the source (or it's lost on the next export — tscircuit→KiCad is one-way).
+- **Grind the gates IN ORDER: outline → courtyard → unrouted.** Don't chase routability past an invalid
+  placement. Worked, on flexisette (cassette: OLED window + 2 reels + 4 screws + a bottom head-notch, all
+  keep-out): **12 outline violations → 0** (map regions, narrow the mcu, drop the breakout headers) →
+  **14 courtyard overlaps → 0** (drop reset/boot buttons, stack support above the WROOM, spread blocks) →
+  **~1 unrouted** with every hole kept out — a fabbable, routable floorplan. ~8 measured iterations, each
+  a `outline-check` + `drc_check` + a fast capped route. Pace it: outline-check is build-only (fast);
+  only run the route once outline+courtyard are clean.
+
+**The autoplacer you'd build (placement is an algorithm, not just vibes).** This grind is the manual
+version of a real autoplacer — the placement analog of the autorouter, and the one place no good open
+tool exists (KiCad's annealer is weak; tscircuit's `layoutMode="pack"` stacks on the origin). If you
+automate it: model the netlist as a **hypergraph**, the board-minus-cutouts as a **BSP/quadtree** (fast
+"is this region free" queries) + an **R-tree** over courtyards (overlap). Then **recursive min-cut
+bisection** to assign communicating blocks to adjacent regions, **force-directed / simulated-annealing**
+refinement, legalised against the three gates as hard constraints. Cost = **HPWL** (half-perimeter
+wirelength, cheap) for the inner loop; **validate the winner with a fast capped route** (the ground
+truth — HPWL is only a proxy). `place-sweep.mjs` is the one-part primitive; a real placer optimises all
+parts at once with HPWL + the fast route as fitness.
 
 Placement → routing is also a **per-block loop** (isolate one block's routability before composing).
 Make the number cheap to read and refine against it. Three bundled scripts (in `scripts/`) encode the loop; wire them
@@ -226,6 +267,12 @@ Two ways to close it:
 - **Route the whole board with Freerouting** (a real maze router — ripup-retry, **45° traces** — that
   reached **0 unrouted, ~18 vias, ~5 s** on flexisette where sequential-trace stalls at ~10). Getting it
   back into KiCad was the catch; there are two ways, **prefer the first:**
+  - **Pin Freerouting v2.1.0** (`freert`). Its `-mp`/`-oit` CLI flags and `router.max_passes` config are
+    **ignored** — it runs to a 9999-pass default and only writes the `.ses` when it **converges** (so a
+    routable board writes in seconds, but a board it can't fully route oscillates forever and writes
+    NOTHING — measure such a placement from the LOG, not the `.ses`). **Don't upgrade to v2.2.x for
+    tscircuit:** it needs Java 25 *and* its stricter parser rejects the tscircuit DSN (`padstack name
+    expected at 'V3V3'`). Details in `freeroute.sh`'s header.
   - **IPC injection (headless, recommended)** — `tsci export -f specctra-dsn` → `freeroute.sh <tsx>` →
     `apply_ses_ipc.py <ses> --save --clear`. Injects straight into a running pcbnew; works with
     tscircuit's own DSN; no GUI menus. See *Automate KiCad headless via the IPC API* below — this is the

@@ -4,10 +4,17 @@
 # Back into KiCad: inject the .ses with `apply_ses_ipc.py` (IPC, headless — works with a
 # tscircuit-exported DSN, no GUI menus). The old GUI Specctra round-trip is the fallback.
 #
-# FAST iteration is the point: cap the passes so the router never spins. Defaults route a
-# quick result for measuring a placement; raise the caps for a final grind.
-#   MP=<max route passes, default 12>   OIT=<optimization passes, default 0>   MAXT=<wall timeout s, 120>
-#   e.g.  MP=100 OIT=20 bash scripts/freeroute.sh build/index.dsn   # final grind
+# VERSION REALITY (Freerouting v2.1.0, the one that works for tscircuit DSNs):
+#   - The `-mp`/`-oit` CLI flags and `router.max_passes` in freerouting.json are IGNORED — it runs to
+#     the built-in default (9999 passes). So you CANNOT cap passes; the only bound is the wall timeout.
+#   - It writes the .ses ONLY when it CONVERGES (no improvement for a while). A routable board converges
+#     in seconds. A board it can't fully route (e.g. keepouts that strand a net) OSCILLATES forever and
+#     NEVER writes — so on a timeout you get NO .ses, only the log.
+#   - Therefore: for MEASURING a placement, run with a short MAXT and read the unrouted count from the
+#     LOG (build/freeroute.log), don't rely on the .ses. For an injectable .ses, the board must converge.
+#   - DON'T upgrade to v2.2.x for tscircuit: it needs Java 25 AND its stricter DSN parser REJECTS the
+#     tscircuit DSN ("padstack name expected at 'V3V3'"). Stay on v2.1.0 for this flow.
+#   MAXT=<wall timeout s, default 120>   (MP/OIT are passed but v2.1.0 ignores them)
 #
 # Freerouting = real maze router (ripup-retry, 45 deg). Needs freert (~/.local/bin/freert; FREERT=).
 set -u
