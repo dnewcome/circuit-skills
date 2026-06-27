@@ -207,16 +207,24 @@ PLACEMENT*, not one long route:
   a `outline-check` + `drc_check` + a fast capped route. Pace it: outline-check is build-only (fast);
   only run the route once outline+courtyard are clean.
 
-**The autoplacer you'd build (placement is an algorithm, not just vibes).** This grind is the manual
-version of a real autoplacer — the placement analog of the autorouter, and the one place no good open
-tool exists (KiCad's annealer is weak; tscircuit's `layoutMode="pack"` stacks on the origin). If you
-automate it: model the netlist as a **hypergraph**, the board-minus-cutouts as a **BSP/quadtree** (fast
-"is this region free" queries) + an **R-tree** over courtyards (overlap). Then **recursive min-cut
-bisection** to assign communicating blocks to adjacent regions, **force-directed / simulated-annealing**
-refinement, legalised against the three gates as hard constraints. Cost = **HPWL** (half-perimeter
-wirelength, cheap) for the inner loop; **validate the winner with a fast capped route** (the ground
-truth — HPWL is only a proxy). `place-sweep.mjs` is the one-part primitive; a real placer optimises all
-parts at once with HPWL + the fast route as fitness.
+**Autoplace the BLOCKS — `scripts/autoplace.mjs` (the placement analog of the autorouter).** Placement
+is an algorithm, not just vibes, and this is the one spot with no good open tool (KiCad's annealer is
+weak; tscircuit's `layoutMode="pack"` stacks on the origin). The shipped placer reads the built
+`circuit.json` (per-subcircuit block bboxes + cutouts + the outline polygon + inter-block connectivity
+from the `subcircuit_connectivity_map_key`) and **simulated-anneals the block positions (+90° rotation)**
+to minimise **HPWL** (inter-block Manhattan wirelength → communicating blocks sit close) under **hard
+penalties for the three gates**: block-block overlap, block-on-cutout, and block-outside-outline
+(point-in-polygon, so it respects the head-notch). Edge/connector blocks stay put with `--lock`.
+```bash
+node scripts/autoplace.mjs                 # suggest block pcbX/pcbY (+rot); dry run
+node scripts/autoplace.mjs --scramble --write   # from random spreads, restarts, apply the best
+```
+It gets you a near-valid floorplan in seconds (HPWL-min, parts in-board); **always validate the winner
+with `outline-check` + a fast route** (HPWL is only a proxy — the route is ground truth), and expect to
+hand-finish the last courtyard overlap or two. The pure geometry/cost/anneal/extract functions are unit-
+tested: `node --test tests/autoplace.test.mjs` (10 cases — overlap, point-in-poly incl. notch, cost
+penalties, anneal-separates-overlap, lock, extraction). To go further: recursive min-cut bisection to
+seed regions, then this anneal; or extend from block-level to per-part.
 
 Placement → routing is also a **per-block loop** (isolate one block's routability before composing).
 Make the number cheap to read and refine against it. Three bundled scripts (in `scripts/`) encode the loop; wire them
@@ -523,6 +531,8 @@ scripts/apply_ses_ipc.py   IPC: inject a Freerouting SES into the live board hea
 scripts/apply_ses.py       OBSOLETE SWIG relic (geometric net guess -> shorts); use apply_ses_ipc.py
 scripts/module-scaffold.sh stamp a new subcircuit block (defaults to {...JLCPCB})
 scripts/place-sweep.mjs    move a part across candidates, report unrouted each
+scripts/autoplace.mjs      autoplacer: anneal block positions (HPWL + outline/cutout/courtyard gates)
+tests/autoplace.test.mjs   unit tests for the autoplacer core (node --test tests/*.test.mjs)
 rules/                 DRC rulesets: fab.tsx presets + <fab>.kicad_dru + README (JLCPCB default)
 Makefile:  make dev | build | modules | outline | routecheck [MODS=…] | freeroute | sweep MOD= REF= POS= | module NAME= | render | export
 ```
