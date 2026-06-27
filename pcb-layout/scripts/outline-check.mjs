@@ -33,11 +33,15 @@ const nameOf = (pc) => (pc && srcById[pc.source_component_id]?.name) || pc?.pcb_
 // 1) off the outline — tscircuit's own error (covers notches + off-edge)
 const outside = arr.filter(e => e.type === "pcb_component_outside_board_error")
 
-// 2) inside a cutout — AABB overlap of each component's bbox with each cutout rect
+// 2) inside a cutout — AABB overlap of each component's bbox with each cutout rect.
+// Parts INTENTIONALLY over a cutout (e.g. an OLED/display behind a window) are allowed:
+// ALLOW_IN_CUTOUT="OLED,LCD" (default "OLED").
+const allow = new Set((process.env.ALLOW_IN_CUTOUT ?? "OLED").split(",").map(s => s.trim()).filter(Boolean))
 const cutouts = arr.filter(e => e.type === "pcb_cutout")
 const comps = arr.filter(e => e.type === "pcb_component" && e.center)
 const inCutout = []
 for (const c of comps) {
+  if (allow.has(nameOf(c))) continue   // intentionally over a cutout (display behind a window)
   for (const k of cutouts) {
     const kw = k.width ?? (k.radius ? k.radius * 2 : 0), kh = k.height ?? (k.radius ? k.radius * 2 : 0)
     if (Math.abs(c.center.x - k.center.x) < (c.width + kw) / 2 &&
