@@ -174,6 +174,37 @@ This is where the time goes and where tools are worst (parts dumped at origin, d
   Hierarchical Layout** plugin (lay out one repeated channel, replicate to all — ideal for key arrays +
   variants).
 
+## Round-trip floorplan loop (the fast early-design loop + variants)
+
+tscircuit→KiCad is one-way for *routing*, but **part positions round-trip cleanly** — and that's where
+the early design time goes (drag a part, look at the ratsnest, repeat). Keep positions as **data**, not
+buried in `pcbX/pcbY` literals, so you can hand-place visually AND fork per-release variants. Two
+bundled scripts (`scripts/sync_positions.py`, `scripts/apply_placement.py`) are the round-trip:
+
+```
+make place  [VARIANT=glow]   # tsci export (rough) -> apply placement/<V>.json -> open pcbnew
+   ── drag + ROTATE parts by eye against the ratsnest/DRC (rotation is captured) ──
+make sync   [VARIANT=glow]   # read the board's footprint (at x y rot) -> placement/<V>.json
+make variant V=glow          # fork the current placement into a new release
+```
+
+- **It's PRE-ROUTING and runs on a throwaway board** (`build/floorplan.kicad_pcb`) so the routed board
+  is never at risk; no re-route needed while you're only moving parts. `route.sh` then `apply_placement`s
+  the saved `placement/<VARIANT>.json` right after export, so the floorplan feeds the real route.
+- **Positions are stored in the tscircuit-centred frame** (board-outline bbox centre maps KiCad mm ↔
+  design mm; on flexisette that centre is (100,100), so `tx = kx−100, ty = 100−ky`). Derive the centre
+  from the outline so it works on any board.
+- **Format gotcha:** a *fresh* `tsci export` writes `(layer F.Cu)` (unquoted, name on the next line); a
+  KiCad-*saved* board writes `(layer "F.Cu")`. Parse the footprint's **first `(at)`** (it precedes all
+  pad/property `(at)`s) and accept either layer form — don't anchor on `(footprint "name"`.
+- **SIDE (top/bottom) stays in code** (`layer=` on the part) — a hand flip needs footprint mirroring;
+  keep that in the `.tsx`, round-trip only x/y/rot.
+- **Variants = unique boards from one circuit:** `placement/<release>.json` per release; same topology,
+  different floorplan. This is the clean way to ship "a different PCB for each drop."
+- **Connectors to the edge:** the round-trip is how you *make* it stick — drag each connector to its
+  shell-slot edge (see **pcb-enclosure-fit**), rotate the opening outward, `make sync`. Or seed a
+  variant by writing the edge x/y/rot into the json directly.
+
 ## The measured iteration loop (encode it; don't eyeball it)
 
 **The full-board loop is ONE command: `scripts/route.sh`** — export placement → reconcile nets
