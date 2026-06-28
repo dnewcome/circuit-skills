@@ -204,6 +204,15 @@ make variant V=glow          # fork the current placement into a new release
 - **Connectors to the edge:** the round-trip is how you *make* it stick — drag each connector to its
   shell-slot edge (see **pcb-enclosure-fit**), rotate the opening outward, `make sync`. Or seed a
   variant by writing the edge x/y/rot into the json directly.
+- **Auto-orient first to untangle the ratsnest** (`make untangle [VARIANT=x]`, `scripts/untangle.mjs`):
+  the cheap pre-routing win the autorouter can't give you. Holds positions fixed and rotates each part
+  to the 0/90/180/270 that minimises its **signal** nets' wirelength (power/ground dropped — poured,
+  high-fanout), iterating to convergence. **Every rotation is gate-checked** (won't push a part off the
+  outline or onto a cutout). Measured **~14% shorter signal wirelength, 11 parts reoriented** on
+  flexisette. It writes straight to `placement/<variant>.json`, so it's just a seed for the same loop:
+  `make untangle` → `make place` (eyeball + hand-tune) → route. HPWL is a proxy — validate the winner
+  with a fast route. Pure core is tested (`tests/untangle.test.mjs`); part-level rotation here complements
+  `autoplace.mjs`'s block-level position+rotation annealing.
 
 ## The measured iteration loop (encode it; don't eyeball it)
 
