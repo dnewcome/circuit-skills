@@ -25,7 +25,7 @@ def edge_shapes(txt):
         cx,cy,ex,ey = map(float, m.groups()); r = ((ex-cx)**2+(ey-cy)**2)**0.5
         bboxes.append((cx-r, cy-r, cx+r, cy+r))
     # gr_poly: bbox of pts
-    for m in re.finditer(r'\(gr_poly\s*\(pts((?:\s*\(xy [-\d.]+ [-\d.]+\))+)\)[\s\S]{0,400}?\(layer Edge\.Cuts\)', txt):
+    for m in re.finditer(r'\(gr_poly\s*\(pts((?:\s*\(xy [-\d.]+ [-\d.]+\))+)\s*\)[\s\S]{0,200}?\(layer Edge\.Cuts\)', txt):
         pts = [(float(a),float(b)) for a,b in re.findall(r'\(xy ([-\d.]+) ([-\d.]+)\)', m.group(1))]
         xs=[p[0] for p in pts]; ys=[p[1] for p in pts]
         bboxes.append((min(xs),min(ys),max(xs),max(ys)))

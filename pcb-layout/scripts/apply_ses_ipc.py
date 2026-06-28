@@ -81,12 +81,16 @@ def main():
             pad_net[(ref, str(pd.number))] = pd.net
     have_pad_nets = sum(1 for v in pad_net.values() if v and v.name)
     print(f"nets: {len(name_net)} named | pad map: {len(pad_net)} pads, {have_pad_nets} with nets")
+    # (tried snapping endpoints to pad centres to kill dangling/unconnected — it ADDED crossings/shorts
+    #  and didn't reduce unconnected, so we inject Freerouting's geometry verbatim. The unconnected tail
+    #  is the genuine route tail, not off-pad slop.)
 
     def map_net(raw):
         nm = raw.strip('"')
         m = re.match(r'Net-\((.+)-Pad(\w+)\)$', nm)
         if m:
-            return pad_net.get((m.group(1), m.group(2)))
+            ref = re.sub(r'_source_component_\d+$', '', m.group(1))  # tscircuit infix
+            return pad_net.get((ref, m.group(2)))
         m = re.match(r'(.+)_source_net_\d+$', nm)
         if m:
             return name_net.get(m.group(1))
