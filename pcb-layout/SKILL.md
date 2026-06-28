@@ -131,6 +131,10 @@ This is where the time goes and where tools are worst (parts dumped at origin, d
   IC → place adjacent. Captures ~all decoupling/pull-ups.
 - **Floorplan by signal flow:** power → MCU → peripherals → connectors; pin connectors/jacks/mounting
   holes to board edges *first*. This is the only real eyeballing — ~5 coordinates.
+  - **If the board goes in a printed/CNC enclosure, the shell openings constrain placement** — pin each
+    connector to its shell-slot coordinate and the display to its window BEFORE the rest, then verify in
+    3D. See the **pcb-enclosure-fit** skill (export board → register to the printed parts → render a
+    fit-check → gate placement on cutout/connector/screw alignment).
 - **Connectors + user controls live on EDGES, oriented outward.** A USB-C / barrel / jack must sit on
   the board edge with its mouth facing off-board (a connector floating mid-board or rotated inward is
   un-mateable — a common AI-placement bug). Buttons/switches the user presses go on an accessible edge.
@@ -272,6 +276,26 @@ Two ways to close it:
   pours + ~80% routing + ratsnest. **But the auto-routed traces are low quality** — expect shorts +
   crossings in the DRC; often it's faster to *keep the placement, rip up the routing, and reroute clean*
   in KiCad than to debug it. KiCad is then the source of truth (one-way).
+
+  **Fixing a handful of residual shorts in the injected route — surgically, not by re-routing:**
+  After IPC injection you typically have a *few* `shorting_items` where a Freerouting wire grazes a
+  neighboring pad (its own clearance + the SES→KiCad coordinate rounding tips a 45° wire ~10-20 µm into
+  an adjacent pad). **Do NOT try to fix these with a board-wide clearance bump and a re-route.** Measured
+  on flexisette: a tight board converges at `clearance 150` (0.15 mm) but bumping the DSN default to 250,
+  or even the *targeted* `(clearance N (type smd_wire))` to push wires off pads, strands **17-52 nets**
+  (it never converges → no SES). Freerouting *does* honor `smd_wire`/`pin_wire` clearance types, but any
+  board-wide pad clearance increase makes a dense board unroutable. Instead, **fix each short as an
+  obstacle-aware text edit on the `.kicad_pcb`** and re-check with `kicad-cli pcb drc`:
+  1. Get the exact short geometry from the DRC JSON (`items[].pos` + descriptions).
+  2. **Read the REAL pad/via extents** from the footprints — don't guess. (flexisette gotcha: ESP32-S3
+     WROOM castellated pads are **1.5 mm wide in X**, so a "nudge 0.25 mm off the pad center" still landed
+     *inside* the pad. And the offending obstacle is often a **via** — Ø0.6 mm, 0.3 mm radius — not a pad.)
+  3. Map *every* pad + same-layer copper in the local cluster, then reroute the one wire through a verified
+     lane (e.g. thread VBAT through the 0.6 mm gap between a GND pad's edge and a VSYS via's clearance
+     ring), keeping ≥ fab clearance (0.127 mm) to each. Reuse the segment UUIDs; preserve net numbers.
+  4. Re-run `drc_check.py` after EACH edit — these are congested clusters and a fix often trades one short
+     for another until you find the true lane (2-3 iterations is normal). This took flexisette 3 real
+     shorts → 0 with placement/keepouts untouched.
 - **Route the whole board with Freerouting** (a real maze router — ripup-retry, **45° traces** — that
   reached **0 unrouted, ~18 vias, ~5 s** on flexisette where sequential-trace stalls at ~10). Getting it
   back into KiCad was the catch; there are two ways, **prefer the first:**

@@ -70,15 +70,38 @@ def main():
     print(f"=== ROUTING — other: tracks_crossing={by.get('tracks_crossing',0)} "
           f"track_dangling={by.get('track_dangling',0)} unconnected={unconn} ===")
 
-    cos = {t:n for t,n in by.items() if t in COSMETIC}
-    print(f"=== RULE/FAB/COSMETIC (global-fix or ignorable): {sum(cos.values())} ===")
-    for t,n in sorted(cos.items(), key=lambda x:-x[1]):
-        print(f'   {n:4d} {t}')
+    # --- EDGE: copper AT or OVER the board cut is a REAL defect, NOT cosmetic. ---
+    # A copper_edge_clearance with actual gap <= EDGE_REAL mm means the trace touches/crosses
+    # the Edge.Cuts (it'll be milled off / shorted to the routed edge) — gate on it. A gap
+    # above the threshold but below the rule is copper merely *close* to the edge = cosmetic.
+    EDGE_REAL = 0.05
+    edge_real, edge_near = [], []
+    for v in V:
+        if v.get('type') != 'copper_edge_clearance': continue
+        m = re.search(r'actual ([\d.-]+) mm', v.get('description',''))
+        act = float(m.group(1)) if m else 0.0
+        (edge_real if act <= EDGE_REAL else edge_near).append((act, v))
+    if edge_real:
+        print(f"=== EDGE — copper AT/OVER the board cut (REAL, gap<= {EDGE_REAL}mm): {len(edge_real)} ===")
+        for act, v in sorted(edge_real, key=lambda x: x[0]):
+            loc = "; ".join(f"{it.get('description','?')[:30]}@({it.get('pos',{}).get('x')},{it.get('pos',{}).get('y')})"
+                             for it in v.get('items',[]))
+            print(f"   gap={act:.3f}mm  {loc}")
 
-    blocking = len(court) + len(real_short) + len(false_short) + by.get('tracks_crossing',0)
+    cos = {t:n for t,n in by.items() if t in COSMETIC}
+    cos_edge_near = len(edge_near)            # edge violations that are merely close (kept cosmetic)
+    cos_total = sum(cos.values())             # COSMETIC set already counts ALL copper_edge_clearance
+    cos_total -= len(edge_real)               # ...so subtract the ones we promoted to EDGE-REAL
+    print(f"=== RULE/FAB/COSMETIC (global-fix or ignorable): {cos_total} ===")
+    for t,n in sorted(cos.items(), key=lambda x:-x[1]):
+        shown = n - len(edge_real) if t == 'copper_edge_clearance' else n
+        if shown: print(f'   {shown:4d} {t}')
+
+    blocking = (len(court) + len(real_short) + len(false_short)
+                + by.get('tracks_crossing',0) + len(edge_real))
     print(f"\nSUMMARY: placement={len(court)} real-shorts={len(real_short)} "
           f"false-shorts={len(false_short)} crossings={by.get('tracks_crossing',0)} "
-          f"unconnected={unconn} | cosmetic={sum(cos.values())}")
+          f"edge-over-cut={len(edge_real)} unconnected={unconn} | cosmetic={cos_total}")
     print("RESULT:", "CLEAN ✓" if blocking == 0 else f"{blocking} blocking issue(s) ✗")
     sys.exit(1 if blocking else 0)
 
