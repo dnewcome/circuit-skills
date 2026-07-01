@@ -339,12 +339,19 @@ Two ways to close it:
 - **Route the whole board with Freerouting** (a real maze router — ripup-retry, **45° traces** — that
   reached **0 unrouted, ~18 vias, ~5 s** on flexisette where sequential-trace stalls at ~10). Getting it
   back into KiCad was the catch; there are two ways, **prefer the first:**
-  - **Pin Freerouting v2.1.0** (`freert`). Its `-mp`/`-oit` CLI flags and `router.max_passes` config are
-    **ignored** — it runs to a 9999-pass default and only writes the `.ses` when it **converges** (so a
-    routable board writes in seconds, but a board it can't fully route oscillates forever and writes
-    NOTHING — measure such a placement from the LOG, not the `.ses`). **Don't upgrade to v2.2.x for
-    tscircuit:** it needs Java 25 *and* its stricter parser rejects the tscircuit DSN (`padstack name
-    expected at 'V3V3'`). Details in `freeroute.sh`'s header.
+  - **Freerouting v2.1.0** (`freert`) — fine for simple **2-layer** boards. Its `-mp`/`-oit` flags are
+    **ignored** (runs to a 9999-pass default) and it only writes the `.ses` on **full convergence** —
+    oscillates forever + writes NOTHING otherwise (measure from the LOG, not the `.ses`). It also **crashes
+    with a maze `NullPointerException` (`TileShape … null`) on some geometry**, so it can never reach 0 on
+    boards that trip it. For anything dense or 4-layer, prefer v2.2.4.
+  - **Freerouting v2.2.4** (`freert224`, needs **JDK 25** — class file v69; JDK 21 throws
+    `UnsupportedClassVersionError`). Install user-local: `curl -fsSL <adoptium temurin 25 jdk> | tar` →
+    `~/jdk25`, wrap as `~/.local/bin/freert224`. **This is the better engine and the 4-layer flow**
+    (verified on einhander: 107 nets → ~3 unrouted in ~5 s, no NPE). It (a) writes a **PARTIAL `.ses`** so
+    you inject + hand-finish the tail, (b) **honors `(type power)` inner layers as planes** — placing the
+    power fanout vias and keeping signals on F/B. The old "v2.2.x rejects the tscircuit DSN (`padstack name
+    expected at 'V3V3'`)" gotcha is caused by tscircuit's malformed `(wiring)` section — **strip it first**
+    with `dsn_4layer_planes.py` (which also relabels the inner layers). See **4-layer flow** below.
   - **IPC injection (headless, recommended)** — `tsci export -f specctra-dsn` → `freeroute.sh <tsx>` →
     `apply_ses_ipc.py <ses> --save --clear`. Injects straight into a running pcbnew; works with
     tscircuit's own DSN; no GUI menus. See *Automate KiCad headless via the IPC API* below — this is the
@@ -465,12 +472,130 @@ Layer count is a *placement-difficulty* decision — the cheapest lever after pl
   1. Set the board to 4 copper layers (Board Setup ▸ Physical Stackup); assign **In1 = GND, In2 = PWR**.
   2. Add the planes as **zones**: `add_plane.py GND In1.Cu --replace` and `add_plane.py V3V3 In2.Cu
      --replace`. On a dedicated plane layer (no signals) they fill as **1 island** — the check confirms it.
-  3. **Route SIGNALS ONLY** with Freerouting. **Never let it route GND/PWR as tracks** on 4-layer — it
-     ignores the inner planes and snakes power everywhere (the classic failure). Exclude the plane nets.
-  4. Stitch each power/ground pin (and QFN/EPAD thermal pads) to its plane with a via, then `refill_zones`.
+  3. **Let Freerouting route GND/PWR *as normal nets*, then carry them on the planes + finish the corners.**
+     ⚠️ CORRECTED (einhander, verified — this reverses earlier advice): the three "obvious" ways to keep
+     GND/PWR off the signal layers all FAIL, so don't reach for them first:
+     - *Relabel inner layers `(type power)` and leave GND/PWR in the netlist* → Freerouting can't use the
+       inner layers so it snakes GND/PWR as **hundreds of tracks on F.Cu/B.Cu anyway** (einhander: 156 GND +
+       98 V3V3 segments). The relabel only stops *signals* on the inner layers; it does NOT make the router
+       fanout power pins to the plane.
+     - *Drop GND/PWR from the routed netlist entirely* (`dsn_drop_nets.py`) → discrete two-pin decaps are
+       fine (via-in-pad), but **fine-pitch QFN power pins are STRANDED**: a JLC-legal 0.6 mm via won't fit on
+       a 0.5 mm-pitch pad, and their short pin→decap *dogbone escapes* — which only an autorouter places —
+       are gone too (einhander: 42 signals routed clean, but 18 QFN/decap power pads left unconnected).
+     - *Declare DSN `(plane GND …)`* → Freerouting 2.2.4 *parses* it (has `io/specctra/parser/Plane.class`)
+       but **won't fanout pads to it**: 0 plane vias, ~48 nets left unrouted. Its plane mode is a no-op here.
+  4. So the recipe that actually converged: **keep GND/PWR in the route** (the QFN dogbones get placed),
+     `add_plane.py` the inner zones, inject the SES, then **convert only the dense/short-prone corners**
+     (the LDO/USB power cluster) to plane-vias with a DRC-verified finisher, and give the **QFN a LOCAL
+     GND pour** (`add_local_zone.py U1 GND F.Cu`) so its ground pins tie into copper on their own layer and
+     stitch down through the GND vias already there. Every GND/PWR pin ends on the plane; the only signal-
+     layer power copper left is unavoidable short escapes, not cross-board snaking.
 
   Net effect: a brutal QFN escape becomes "drop a via to the plane" + a short run on a clear outer layer.
   That is the entire reason to spend the extra two layers.
+
+  **The working 4-layer flow (one command: `scripts/route4.sh`, verified on einhander — RP2040 USB-MIDI,
+  43-pin GND + 24-pin V3V3 that 2-layer Freerouting could never route):**
+  1. `<board layers={4}>` in tscircuit → `tsci export -f {kicad_pcb,specctra-dsn}` (all 4 layers export
+     as `(type signal)`, plus a malformed `(wiring)` section of pre-placed power vias).
+  2. **`scripts/dsn_4layer_planes.py <dsn> --no-planes --relabel-power`** — strips the `(wiring)` section
+     (the `padstack name expected at 'V3V3'` parse-breaker) AND relabels the inner layers `(type power)`
+     so signals stay on F.Cu/B.Cu. (This keeps *signals* off the inner planes — it does NOT, on its own,
+     move GND/PWR onto them; see the corrected step 3 above.)
+  2b. **`scripts/add_npth_keepouts.py <kicad_pcb> <dsn>`** and **`scripts/add_cutout_keepouts.py`** — keepout
+     every mechanical hole so no trace crosses a drilled hole (see the NPTH-keepout note below — this bit
+     einhander AND flexisette).
+  3. **`freert224`** (v2.2.4 + JDK 25) routes it — GND/PWR route as tracks + power vias; the inner planes
+     carry them once poured. (v2.1.0 can't: ignores `(type power)`, NPE-crashes, never writes a partial.)
+  4. KiCad: `add_plane.py GND In1.Cu --replace` + `add_plane.py V3V3 In2.Cu --replace` (solid zones the
+     power vias land in) → `apply_ses_ipc.py <ses> --save --clear` → **`check_floating.py`** (catches
+     wrong-side pads — see below) → `drc_check.py`.
+  - **Gotcha order that bit on einhander:** run `drc_check.py` (courtyard) BEFORE celebrating — tight
+    decoupling/passive placement causes courtyard overlaps that bridge pads into **real GND/PWR shorts**;
+    `outline-check` won't catch them. Fix the overlaps in code, re-run `route4.sh` (it's ~30 s end-to-end).
+
+  **Dense high-pin-count placement heuristics (hard-won on einhander's RP2040 — the tail shrank from
+  PLACEMENT, never from smarter finishers):**
+  - **Budget generous board area; density is the real lever.** RP2040 + flash + xtal + ~15 caps + USB-C +
+    LDO jammed into a 13 mm band sat right at Freerouting's wall (~12 nets unrouted, tail nets varying per
+    run). Widening the band to ~19–25 mm (and pushing the key matrix forward) dropped it to ~5 — the single
+    highest-leverage move. When a QFN's tail won't close, **make room before you touch a finisher.**
+  - **On 4-layer, keep decoupling OFF the under-QFN escape.** Bottom-side caps directly under the QFN block
+    B.Cu signal escape (QSPI/USB stall). Put them in rows ABOVE/BELOW the chip (leave |x|,|y| < ~4.5 mm clear).
+  - **USB-C CC/power corner is intrinsically hard — spread it.** CC resistors go on the **bottom, under the
+    connector** (via straight behind each CC pin); spread the LDO + its caps into open band space; never
+    cluster power at the connector (every wire crosses the 0.5 mm-pitch pad row → shorts).
+  - **Freerouting is NON-DETERMINISTIC — freeze one baseline, don't nudge-and-reroll.** Each re-route
+    reshuffles the whole board and the tail *moves* (10→15→6→9). Iterating placement + re-routing chases a
+    moving target; once a run comes out `RESULT: CLEAN ✓` (0 shorts/crossings) with a small unconnected
+    tail, STOP re-routing and finish THAT board deterministically.
+  - **Finishing a congested corner by adding copper shorts things.** A through-via's B.Cu ring bridges a
+    nearby track; a straight pad-to-pad track crosses the connector pads. So a finisher must be
+    **DRC-verified**: `scripts/finish_iter.py` tries each stitch via in several offset directions/distances
+    and KEEPS only the placement that adds no short/crossing (DRC as oracle); leaves a pad unconnected
+    rather than shorting. `scripts/fanout_planes.py` is the blind (fast) version — use it only in open space.
+  - **kipy gotchas:** `b.create_items(x)` returns server handles — pass THOSE to `b.remove_items`, not your
+    originals (else "no valid items to delete"). And the IPC server dies easily between shell calls — do all
+    kipy work in ONE process/bash call, relaunching pcbnew at the top. Also: a point-to-point finisher must
+    add a VIA when the two SMD pads are on the same side and it routes on the *other* layer — an F.Cu pad +
+    a bare B.Cu track connects NOTHING (and passes a shorts-only DRC check as a false "OK"). Verify the
+    finisher reduced `unconnected`, not just that shorts stayed flat.
+  - **One net that won't cross a congested corridor → JUMPER, don't fight it.** If a single net (classically
+    a power net like VBUS threading past the LDO's V3V3/GND, or an escape past a connector's pad row) can't
+    be routed without crossing other copper no matter the path, place a **0 Ω jumper** (a real resistor part)
+    or a **DNP wire-jumper** on it: route the blocked net up to the jumper and let the crossing traffic pass
+    on the same layer through the gap beneath it — you pick the ONE crossing point deliberately. Cheaper and
+    more reliable than hand-threading or re-placing the whole corner. (For a pure power net with few pads,
+    the equivalent is a small local **copper pour/zone** for that net in the corner instead of a thin trace.)
+
+### Two traps that pass a shorts-only check but break the board (einhander + flexisette)
+
+- **Traces routed THROUGH mechanical holes.** An NPTH hole (keyswitch pole/alignment pins, USB-C mount
+  posts, board screw holes) has **no copper**, so Freerouting sees no obstacle and routes a track straight
+  across it — then the drill removes the copper and the net is **open**. This is invisible to a casual look
+  and hit BOTH einhander (11 traces across keyswitch/USB holes) and flexisette. `add_cutout_keepouts.py`
+  only keepouts interior **Edge.Cuts** shapes; mechanical holes are **pads**, so they need
+  **`scripts/add_npth_keepouts.py <kicad_pcb> <dsn> --margin 0.3 --min-hole 0.5`** — it finds every
+  `np_thru_hole` pad, computes its world position, and writes a per-copper-layer keepout (hole radius +
+  margin) into the DSN before routing. Run it in the DSN-prep step of *every* board that has mounting holes.
+  A keepout radius of hole/2 + 0.3 mm clears the drill without blocking the part's own electrical pins
+  (they sit outside it). Gate it: after routing, `kicad-cli drc` **`hole_clearance` with `actual 0.000 mm`
+  is a track crossing a hole** — a real defect, not cosmetic (drc_check buckets hole_clearance as
+  fab/cosmetic, so read the actual value).
+
+- **Wrong-side / floating SMD pad.** An SMD pad lives on ONE copper layer, but Freerouting sometimes routes
+  its net on the OTHER layer and never drops a fanout via — so the pad is reached only by opposite-side
+  copper and is **electrically floating** even though a 2D plot "looks" connected (a top-side cap with only
+  back-layer traces going to it). **`scripts/check_floating.py <board>`** flags every SMD pad whose only
+  same-net copper is on the wrong layer with no via, and exits nonzero — run it as a gate right after
+  `apply_ses_ipc`, alongside `drc_check`. (It's orthogonal to DRC-unconnected: a pad can be "reached on its
+  own layer" per check_floating yet still be an unconnected island per DRC — run both.)
+
+### Fanning GND/PWR pads to the plane WITHOUT shorting (collision-aware, not blind)
+
+When you connect plane-net pads to their inner plane with vias, **blind placement shorts on dense boards**:
+a via dropped at a fixed offset + a stub trace lands on a neighbouring signal (einhander: 33 plane-vs-signal
+shorts from `fanout_planes.py`'s naive offset). Two rules:
+- **Prefer VIA-IN-PAD** — a through-via at the pad centre. The pad is already that net's copper, so it adds
+  no signal-layer trace and can't cross a neighbour on the pad's own layer; the zone refill carves the
+  antipad in the *other* plane automatically. Only when via-in-pad is geometrically blocked (a foreign track
+  under/over the pad) do you offset — and then **clearance-check the via point AND the pad→via stub against
+  all foreign copper on both outer layers before accepting it** (`fanout_planes.py` now does this; it leaves
+  a pad unconnected and reports it rather than creating a short).
+- **Via-in-pad won't fit fine-pitch QFN pins** (0.6 mm via on 0.5 mm pitch touches the neighbour). Those
+  need either a routed dogbone escape (leave them in the autorouter's netlist) or a **local pour** over the
+  QFN (`add_local_zone.py <ref> GND F.Cu`) that the pins tie into on their own layer.
+- **Don't hardcode finisher coordinates.** `fix_ldo_planes.py` pinned a VBUS rail at a literal (x,y); a fresh
+  re-route moved the rail and the trace dangled. Derive endpoints from the live board (nearest same-net
+  copper), or re-derive after every re-route.
+- **kipy over IPC dies between shell calls** — launch pcbnew and do all kipy work in ONE bash call
+  (`scripts/apply_fix.sh <script> [args]` handles this: launches pcbnew, waits for `/tmp/kicad/api.sock`,
+  runs the script, logs to a file that survives a hard kill, then kills pcbnew).
+- **`board.get_tracks()` does NOT return vias — use `board.get_vias()`.** Iterating `get_tracks()` and
+  filtering `isinstance(t, Via)` silently matches nothing, so via-deletion/inspection code no-ops without
+  error (it bit einhander's DFM hole-spacing fix — a via 0.04 mm from a mounting hole "wouldn't delete").
+  `create_items([via])` still adds vias fine; only reading them back needs `get_vias()`.
 
 ## DRC rulesets (default: JLCPCB)
 
@@ -572,6 +697,42 @@ have **two sides** — generation and checking are different tools:
   `tracks_crossing`/`shorting_items` (real — rip up & reroute) vs via-rule (global config).
 - Decap caps actually land on their pins (check `pcb_component.center` vs `pinmap.json`).
 - All assembled parts are JLCPCB-stocked; `imports/*` pin the LCSC numbers.
+- **Final DFM gate — `scripts/dfm_check.py <board>` (run before ordering; `make_fab.sh` runs it as
+  step [0]).** KiCad's default DRC does NOT enforce fab **hole-to-hole spacing**, so a finisher via
+  dropped next to a connector/keyswitch/screw hole *passes DRC* but is a JLCPCB DFM "plated through-hole
+  spacing" danger — the two drills break into each other (einhander shipped a GND via **0.04 mm** from a
+  USB-C mount hole that DRC never flagged). `dfm_check` flags plated hole-to-hole EDGE < 0.5 mm and via
+  drill/annular below JLC min, and **splits ACTIONABLE inter-part** violations (move/reroute the via —
+  `fix_hole_spacing.py` deletes it, `reconnect_j14.py` re-fanouts the pad clear of holes *and* copper, or
+  ties a boxed-in pad to a nearby grounded thru-hole with a short trace) from **part-inherent
+  intra-footprint** ones (a USB-C connector's own mount-post-to-pad spacing — informational; the fab still
+  builds it). **NOT a defect: silkscreen over pads/holes + sub-0.15 mm silk lines** — JLC auto-clips silk
+  around every opening, so it never affects copper/drill; don't block a build on the DFM report's
+  silkscreen "Danger" count (at worst a refdes prints partially).
+
+## Fabrication bundle (Gerbers + drill + CPL + BOM)
+
+Once DRC is clean, **`scripts/make_fab.sh <board.kicad_pcb> [name]`** produces the whole upload
+bundle into `fab/`:
+- **Gerbers** (all copper incl. inner planes `.g1/.g2`, mask, silk, paste, edge) + gerber-job, and
+  **Excellon drill** — via `kicad-cli pcb export gerbers|drill`; zipped as `<name>-gerbers.zip`.
+- **CPL / placement** `<name>-cpl.csv` — `kicad-cli pcb export pos --format csv --units mm --side both`.
+- **BOM** `<name>-bom.csv` — **`scripts/gen_bom.py`** parses the board's `(Reference,Value,Footprint)`,
+  maps a LCSC # to each (ICs from `imports/*.tsx` `supplierPartNumbers`; passives from a table of
+  stock-checked JLCPCB **basic** parts), groups identical parts, and flags hand-solder/mechanical
+  parts (keyswitches, headers, tactiles) with a blank LCSC + Note so you set them Do-Not-Place.
+
+`make_fab.sh <board> [name] [jlcpcb|pcbway|both]` — the **Gerbers + CPL are shared** across fabs; only
+the BOM format differs, so both are generated by default:
+- **JLCPCB** (`--fab jlcpcb`) sources by **LCSC** → columns `Comment, Designator, Footprint, JLCPCB Part #`.
+- **PCBWay** (`--fab pcbway`) sources by **manufacturer part number** → columns `Item#, Designator, Qty,
+  Comment, Footprint, Manufacturer Part Number, Manufacturer, LCSC Part No` (LCSC kept as a cross-ref).
+  `gen_bom.py`'s IC_INFO maps the sanitized tscircuit Value to a real MPN + manufacturer; the passive
+  table carries LCSC+MPN+mfr together. OSHPark/Aisler are bare-fab (no assembly) → just the Gerber zip.
+Gotchas that throw JLC's "error processing BOM": an extra column, blank part-number rows, or non-ASCII
+(`Ω`/`µ`) — so the BOM is assembled-parts-only, exact columns, ASCII (`10k` not `10kΩ`); hand-solder parts
+go to `<name>-handsolder.csv`. Also `zip *.gbr *.drl` MISSES the real copper layers (KiCad names them
+`.gtl/.gbl/.g1/.g2/.gts/...`) — match by the full extension list (make_fab.sh does).
 
 ## File layout & helpers
 
